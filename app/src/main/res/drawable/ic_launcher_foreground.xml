@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everything sits inside the 66dp adaptive-icon safe circle, so launcher masks and the system splash never clip it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- rupee sign -->
+    <path
+        android:pathData="M33,34 H59 M33,44 H59 M33,34 H45 C58,34 58,54 45,54 H33 M33,54 L55,76"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- rising bars: spending chart -->
+    <path
+        android:pathData="M64,73 V69 M71,73 V63 M78,73 V57"
+        android:strokeColor="#FFD54F"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+</vector>

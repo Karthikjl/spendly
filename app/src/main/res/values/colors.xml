@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#EEF1FF</color>
+    <!-- Midpoint of the app's indigo gradient, so the system splash hands over to the animated intro without a visible jump. -->
+    <color name="splash">#6F63F0</color>
+</resources>
