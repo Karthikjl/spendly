@@ -32,6 +32,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.border
@@ -128,6 +129,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kk.spendly.BuildConfig
 import com.kk.spendly.data.TxnEntity
+import com.kk.spendly.data.isManual
 import com.kk.spendly.parser.Categorizer
 import com.kk.spendly.update.UpdateState
 import java.text.NumberFormat
@@ -139,7 +141,7 @@ import java.util.Locale
 internal fun rupees(paise: Long): String =
     NumberFormat.getCurrencyInstance(Locale("en", "IN")).apply { maximumFractionDigits = 0 }.format(paise / 100.0)
 
-private val HeroGradient = Brush.linearGradient(listOf(Palette.AccentLight, Palette.AccentDark))
+internal val HeroGradient = Brush.linearGradient(listOf(Palette.AccentLight, Palette.AccentDark))
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Rounded.Home),
@@ -148,8 +150,13 @@ private enum class Tab(val label: String, val icon: ImageVector) {
     Categories("Categories", Icons.Rounded.Category),
 }
 
-/** Opens the add-category dialog; [merchant] is set when it was opened from a transaction. */
-private data class AddRequest(val merchant: String?)
+/**
+ * Opens the add-category dialog. [merchant] is set when it was opened from a parsed transaction (the choice is remembered
+ * for that merchant); [manualId] when it was opened from a manual entry (only that entry is recategorised).
+ */
+private data class AddRequest(val merchant: String?, val manualId: Long? = null)
+
+private fun addRequestFor(t: TxnEntity) = if (t.isManual) AddRequest(null, t.id) else AddRequest(t.merchant)
 
 @Composable
 internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, onTabHandled: () -> Unit = {}) {
@@ -182,6 +189,13 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
     var addRequest by remember { mutableStateOf<AddRequest?>(null) }
     var removing by remember { mutableStateOf<String?>(null) }
     var addingTxn by remember { mutableStateOf(false) }
+    var selectedId by remember { mutableStateOf<Long?>(null) }
+    var editingTxn by remember { mutableStateOf<TxnEntity?>(null) }
+    var deletingTxn by remember { mutableStateOf<TxnEntity?>(null) }
+    var pickingFor by remember { mutableStateOf<TxnEntity?>(null) }
+    // The sheet shows the live row, so an edit or a category change appears in it straight away; a deleted row closes it.
+    val selected = txns.firstOrNull { it.id == selectedId }
+    LaunchedEffect(selected, selectedId) { if (selectedId != null && selected == null) selectedId = null }
 
     // Budget alerts need notification permission, which is asked separately from SMS access.
     var notifOn by remember { mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled()) }
@@ -256,7 +270,7 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
                         when (it) {
                             Tab.Home -> HomeTab(txns, limits, spentBy, previousSpent, month, onOpenBudgets = { tab = Tab.Budgets })
                             Tab.Budgets -> BudgetsTab(spentBy, limits, alertsOff = !notifOn && !BuildConfig.DEMO, onEnableAlerts = { enableAlerts() }) { c -> editing = c }
-                            Tab.Activity -> ActivityTab(txns, vm) { merchant -> addRequest = AddRequest(merchant) }
+                            Tab.Activity -> ActivityTab(txns, onOpen = { selectedId = it.id }, onCategoryPicked = vm::setTxnCategory, onNewCategory = { addRequest = addRequestFor(it) })
                             Tab.Categories -> CategoriesTab(spentBy, onAdd = { addRequest = AddRequest(null) }, onRemove = { c -> removing = c })
                         }
                     }
@@ -264,13 +278,50 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
             }
         }
 
-        if (addingTxn) AddTxnDialog(onDismiss = { addingTxn = false }) { amount, isDebit, note, category ->
-            vm.addManual(amount, isDebit, note, category)
+        if (addingTxn) TxnFormDialog(initial = null, onDismiss = { addingTxn = false }) { amount, isDebit, note, category, timestamp ->
+            vm.addManual(amount, isDebit, note, category, timestamp)
             addingTxn = false
+        }
+        selected?.let { t ->
+            TransactionDetailSheet(
+                txn = t,
+                onDismiss = { selectedId = null },
+                onChangeCategory = { pickingFor = t },
+                onEdit = { editingTxn = t },
+                onDelete = { deletingTxn = t },
+            )
+        }
+        pickingFor?.let { t ->
+            CategoryPicker(
+                selected = t.category,
+                onPick = { vm.setTxnCategory(t, it); pickingFor = null },
+                onNew = { pickingFor = null; addRequest = addRequestFor(t) },
+                onDismiss = { pickingFor = null },
+            )
+        }
+        editingTxn?.let { t ->
+            TxnFormDialog(initial = t, onDismiss = { editingTxn = null }) { amount, isDebit, note, category, timestamp ->
+                vm.updateManual(t.id, amount, isDebit, note, category, timestamp)
+                editingTxn = null
+            }
+        }
+        deletingTxn?.let { t ->
+            GlassDialog(
+                title = "Delete this transaction?",
+                onDismiss = { deletingTxn = null },
+                confirmLabel = "Delete",
+                destructive = true,
+                onConfirm = { vm.deleteManual(t.id); deletingTxn = null; selectedId = null },
+            ) {
+                Text(
+                    "${t.merchant} · ${rupees(t.amountPaise)} will be removed from your totals, charts and budgets. This can't be undone.",
+                    color = Palette.TextMuted,
+                )
+            }
         }
         addRequest?.let { req ->
             AddCategoryDialog(existing = catalog.names, onDismiss = { addRequest = null }) { name, color, icon ->
-                vm.addCategory(name, color, icon, req.merchant)
+                vm.addCategory(name, color, icon, req.merchant, req.manualId)
                 addRequest = null
             }
         }
@@ -727,7 +778,7 @@ private fun CategoriesTab(spentBy: Map<String, Long>, onAdd: () -> Unit, onRemov
 }
 
 @Composable
-private fun Avatar(category: String) {
+internal fun Avatar(category: String) {
     val style = LocalCatalog.current.of(category)
     Box(Modifier.size(42.dp).background(style.color.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) {
         Icon(style.icon, contentDescription = category, tint = style.color, modifier = Modifier.size(22.dp))
@@ -738,7 +789,7 @@ private fun Avatar(category: String) {
 
 private enum class Filter(val label: String) { All("All"), Spent("Spent"), Received("Received") }
 
-private fun dayLabel(ts: Long): String {
+internal fun dayLabel(ts: Long): String {
     val day = Calendar.getInstance().apply { timeInMillis = ts }
     val today = Calendar.getInstance()
     val yesterday = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
@@ -751,7 +802,12 @@ private fun dayLabel(ts: Long): String {
 }
 
 @Composable
-private fun ActivityTab(txns: List<TxnEntity>, vm: MainViewModel, onNewCategory: (String) -> Unit) {
+private fun ActivityTab(
+    txns: List<TxnEntity>,
+    onOpen: (TxnEntity) -> Unit,
+    onCategoryPicked: (TxnEntity, String) -> Unit,
+    onNewCategory: (TxnEntity) -> Unit,
+) {
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(Filter.All) }
     val visible = txns.filter {
@@ -802,18 +858,29 @@ private fun ActivityTab(txns: List<TxnEntity>, vm: MainViewModel, onNewCategory:
                         if (daySpend > 0) Text("-${rupees(daySpend)}", style = MaterialTheme.typography.labelLarge, color = Palette.TextMuted)
                     }
                 }
-                items(rows, key = { it.id }) { TxnRow(it, vm, onNewCategory) }
+                items(rows, key = { it.id }) { TxnRow(it, onOpen, onCategoryPicked, onNewCategory) }
             }
         }
     }
 }
 
 @Composable
-private fun TxnRow(t: TxnEntity, vm: MainViewModel, onNewCategory: (String) -> Unit) {
+private fun TxnRow(
+    t: TxnEntity,
+    onOpen: (TxnEntity) -> Unit,
+    onCategoryPicked: (TxnEntity, String) -> Unit,
+    onNewCategory: (TxnEntity) -> Unit,
+) {
     val catalog = LocalCatalog.current
     var open by remember { mutableStateOf(false) }
     val amount = (if (t.isDebit) "-" else "+") + rupees(t.amountPaise)
-    Glass(Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(20.dp), tint = Color.White.copy(alpha = 0.55f)) {
+    Glass(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(20.dp),
+        tint = Color.White.copy(alpha = 0.55f),
+        onClick = { onOpen(t) },
+        onClickLabel = "View details",
+    ) {
         Row(
             Modifier.padding(horizontal = 14.dp, vertical = 10.dp).semantics { contentDescription = "${t.merchant}, $amount, ${t.category}" },
             verticalAlignment = Alignment.CenterVertically,
@@ -823,7 +890,7 @@ private fun TxnRow(t: TxnEntity, vm: MainViewModel, onNewCategory: (String) -> U
             Column(Modifier.weight(1f)) {
                 Text(t.merchant, maxLines = 1, fontWeight = FontWeight.Medium)
                 Text(
-                    SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(t.timestamp)),
+                    SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(t.timestamp)) + if (t.isManual) " · Manual" else "",
                     style = MaterialTheme.typography.bodySmall, color = Palette.TextMuted,
                 )
             }
@@ -836,8 +903,8 @@ private fun TxnRow(t: TxnEntity, vm: MainViewModel, onNewCategory: (String) -> U
                     )
                     if (open) CategoryPicker(
                         selected = t.category,
-                        onPick = { open = false; vm.setCategory(t.merchant, it) },
-                        onNew = { open = false; onNewCategory(t.merchant) },
+                        onPick = { open = false; onCategoryPicked(t, it) },
+                        onNew = { open = false; onNewCategory(t) },
                         onDismiss = { open = false },
                     )
                 }
@@ -851,7 +918,7 @@ private fun TxnRow(t: TxnEntity, vm: MainViewModel, onNewCategory: (String) -> U
  * screen height and then scrolls, so any number of custom categories stays usable.
  */
 @Composable
-private fun CategoryPicker(selected: String, onPick: (String) -> Unit, onNew: () -> Unit, onDismiss: () -> Unit) {
+internal fun CategoryPicker(selected: String, onPick: (String) -> Unit, onNew: () -> Unit, onDismiss: () -> Unit) {
     val catalog = LocalCatalog.current
     val maxGridHeight = LocalConfiguration.current.screenHeightDp.dp * 0.5f
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -908,11 +975,11 @@ private fun CategoryPicker(selected: String, onPick: (String) -> Unit, onNew: ()
 
 // ---------- Dialogs
 
-private val DestructiveGradient = Brush.linearGradient(listOf(Color(0xFFF87171), Color(0xFFDC2626)))
+internal val DestructiveGradient = Brush.linearGradient(listOf(Color(0xFFF87171), Color(0xFFDC2626)))
 
 /** Shared frosted dialog shell: rounded glass card, title, content, a quiet secondary action and a gradient primary button. */
 @Composable
-private fun GlassDialog(
+internal fun GlassDialog(
     title: String,
     onDismiss: () -> Unit,
     confirmLabel: String,
@@ -927,7 +994,10 @@ private fun GlassDialog(
         Glass(Modifier.fillMaxWidth().padding(horizontal = 22.dp), shape = RoundedCornerShape(32.dp), tint = Color(0xFFFBFAFF)) {
             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                content()
+                Column(
+                    Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) { content() }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TextButton(onClick = onSecondary) { Text(secondaryLabel, color = Palette.TextMuted, fontWeight = FontWeight.SemiBold) }
                     Box(
@@ -944,11 +1014,11 @@ private fun GlassDialog(
 }
 
 @Composable
-private fun SectionLabel(text: String) =
+internal fun SectionLabel(text: String) =
     Text(text, style = MaterialTheme.typography.labelLarge, color = Palette.TextMuted, fontWeight = FontWeight.SemiBold)
 
 @Composable
-private fun GlassField(
+internal fun GlassField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String?,
@@ -985,7 +1055,7 @@ private fun GlassField(
 
 /** Large centered amount entry used for transactions and budgets, so money always looks the same. */
 @Composable
-private fun AmountInput(value: String, onValueChange: (String) -> Unit, tint: Color, decimal: Boolean) {
+internal fun AmountInput(value: String, onValueChange: (String) -> Unit, tint: Color, decimal: Boolean) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     val style = MaterialTheme.typography.displaySmall.copy(color = tint, fontWeight = FontWeight.SemiBold)
@@ -1016,7 +1086,7 @@ private fun AmountInput(value: String, onValueChange: (String) -> Unit, tint: Co
 }
 
 @Composable
-private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+internal fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     Row(Modifier.fillMaxWidth().background(Palette.SurfaceHigh.copy(alpha = 0.55f), RoundedCornerShape(16.dp)).padding(4.dp)) {
         options.forEachIndexed { i, label ->
             val on = i == selected
@@ -1049,67 +1119,6 @@ private fun BudgetDialog(category: String, current: Long?, onDismiss: () -> Unit
             Text("Monthly limit. You'll get an alert at 80% and 100%.", style = MaterialTheme.typography.bodySmall, color = Palette.TextMuted)
         }
         AmountInput(text, { v -> text = v.filter { it.isDigit() }.take(8) }, tint = Palette.Accent, decimal = false)
-    }
-}
-
-@Composable
-private fun AddTxnDialog(onDismiss: () -> Unit, onSave: (Long, Boolean, String, String) -> Unit) {
-    val catalog = LocalCatalog.current
-    var isExpense by remember { mutableStateOf(true) }
-    var amount by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf(Categorizer.OTHER) }
-    val paise = amount.toBigDecimalOrNull()?.movePointRight(2)?.toLong() ?: 0L
-    val tint by animateColorAsState(if (isExpense) Palette.Accent else Palette.Positive, tween(250), label = "txnTint")
-
-    GlassDialog(
-        title = "Add transaction",
-        onDismiss = onDismiss,
-        confirmLabel = if (isExpense) "Add expense" else "Add income",
-        confirmEnabled = paise > 0,
-        onConfirm = { onSave(paise, isExpense, note.trim(), category) },
-    ) {
-        Segmented(listOf("Expense", "Income"), if (isExpense) 0 else 1) { isExpense = it == 0 }
-        AmountInput(
-            amount,
-            { v ->
-                val f = v.filter { it.isDigit() || it == '.' }
-                if (f.count { it == '.' } <= 1 && f.substringAfter('.', "").length <= 2) amount = f.take(10)
-            },
-            tint = tint, decimal = true,
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(50, 100, 500).forEach { add ->
-                Box(
-                    Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(Palette.SurfaceHigh.copy(alpha = 0.55f))
-                        .clickable(onClickLabel = "Add $add rupees") {
-                            amount = ((amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO) + add.toBigDecimal()).stripTrailingZeros().toPlainString()
-                        }.padding(vertical = 9.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text("+₹$add", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = Palette.Accent) }
-            }
-        }
-        GlassField(note, { note = it.take(40) }, label = null, placeholder = "Add a note, e.g. Chai or Auto")
-        if (isExpense) {
-            SectionLabel("Category")
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                catalog.all.filter { it.name != Categorizer.INCOME }.forEach { c ->
-                    val selected = c.name == category
-                    Row(
-                        Modifier.clip(RoundedCornerShape(50))
-                            .background(if (selected) c.color.copy(alpha = 0.16f) else Palette.SurfaceHigh.copy(alpha = 0.5f))
-                            .then(if (selected) Modifier.border(1.5.dp, c.color, RoundedCornerShape(50)) else Modifier)
-                            .clickable(onClickLabel = "Choose ${c.name}") { category = c.name }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(c.icon, null, tint = c.color, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(c.name, style = MaterialTheme.typography.labelLarge, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
-                    }
-                }
-            }
-        }
     }
 }
 

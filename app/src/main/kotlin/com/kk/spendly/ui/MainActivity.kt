@@ -23,8 +23,10 @@ import com.kk.spendly.BuildConfig
 import com.kk.spendly.data.AppDatabase
 import com.kk.spendly.data.Budget
 import com.kk.spendly.data.CustomCategory
+import com.kk.spendly.data.MANUAL_PREFIX
 import com.kk.spendly.data.Repository
 import com.kk.spendly.data.TxnEntity
+import com.kk.spendly.data.isManual
 import com.kk.spendly.parser.Categorizer
 import com.kk.spendly.sms.BudgetAlerts
 import java.util.UUID
@@ -110,27 +112,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val canGoForward get() = month.value.timeInMillis < startOfMonth(Calendar.getInstance()).timeInMillis
 
     /** Creates a category; when [assignMerchant] is set, that merchant is moved into it straight away. */
-    fun addCategory(name: String, colorArgb: Long, iconKey: String, assignMerchant: String? = null) = viewModelScope.launch {
+    fun addCategory(
+        name: String,
+        colorArgb: Long,
+        iconKey: String,
+        assignMerchant: String? = null,
+        assignManualId: Long? = null,
+    ) = viewModelScope.launch {
         dao.addCategory(CustomCategory(name, colorArgb, iconKey))
-        if (assignMerchant != null) Repository.setCategory(dao, assignMerchant, name)
+        // A manual entry is recategorised on its own; a parsed one remembers the merchant for next time.
+        if (assignManualId != null) dao.setCategoryById(assignManualId, name)
+        else if (assignMerchant != null) Repository.setCategory(dao, assignMerchant, name)
     }
 
-    /** Records a cash or other off-SMS transaction dated now. */
-    fun addManual(amountPaise: Long, isDebit: Boolean, merchant: String, category: String) = viewModelScope.launch {
+    /** Records a cash or other off-SMS transaction. */
+    fun addManual(
+        amountPaise: Long,
+        isDebit: Boolean,
+        merchant: String,
+        category: String,
+        timestamp: Long = System.currentTimeMillis(),
+    ) = viewModelScope.launch {
         val finalCategory = if (isDebit) category else Categorizer.INCOME
         dao.insert(
             TxnEntity(
-                dedupeKey = "manual-${UUID.randomUUID()}",
+                dedupeKey = "$MANUAL_PREFIX${UUID.randomUUID()}",
                 amountPaise = amountPaise,
                 isDebit = isDebit,
                 merchant = merchant.ifBlank { "Cash" },
                 category = finalCategory,
                 account = null,
-                timestamp = System.currentTimeMillis(),
+                timestamp = timestamp,
             ),
         )
         if (isDebit) BudgetAlerts.check(getApplication(), dao, finalCategory)
     }
+
+    /** Fixes a manual entry. Transactions parsed from SMS are never touched: the query only matches manual rows. */
+    fun updateManual(id: Long, amountPaise: Long, isDebit: Boolean, merchant: String, category: String, timestamp: Long) =
+        viewModelScope.launch {
+            val finalCategory = if (isDebit) category else Categorizer.INCOME
+            dao.updateManual(id, amountPaise, isDebit, merchant.ifBlank { "Cash" }, finalCategory, timestamp)
+            if (isDebit) BudgetAlerts.check(getApplication(), dao, finalCategory)
+        }
+
+    fun deleteManual(id: Long) = viewModelScope.launch { dao.deleteManual(id) }
 
     fun removeCategory(name: String) = viewModelScope.launch { Repository.removeCategory(AppDatabase.get(getApplication()), name) }
 
@@ -160,8 +186,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         dao.allBudgets().forEach { BudgetAlerts.check(getApplication(), dao, it.category) }
     }
 
-    fun setCategory(merchant: String, category: String) =
-        viewModelScope.launch { Repository.setCategory(dao, merchant, category) }
+    /** Manual entries change on their own; for parsed ones the choice is remembered for every payment to that merchant. */
+    fun setTxnCategory(t: TxnEntity, category: String) = viewModelScope.launch {
+        if (t.isManual) dao.setCategoryById(t.id, category) else Repository.setCategory(dao, t.merchant, category)
+    }
 
     private fun shift(c: Calendar, months: Int) = (c.clone() as Calendar).apply { add(Calendar.MONTH, months) }
     private fun nextMonth(c: Calendar) = shift(c, 1)

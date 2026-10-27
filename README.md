@@ -50,7 +50,9 @@ Most expense trackers ask you to type every payment, or to hand your bank login 
 - Android only accepts an update signed with the same key as the installed app, so a tampered file cannot replace it.
 
 **Everything else**
-- A **+** button for cash and other payments that never send an SMS.
+- A **+** button for cash and other payments that never send an SMS. Pick the date too, so yesterday's chai can be added today.
+- **Edit or delete manual entries** any time: wrong amount, note, date or category is a two-tap fix. Transactions parsed from SMS can't be edited, only recategorised, so they always match your bank.
+- **Tap any transaction** for a full view: exact amount, date and time, account, reference number and its category. For SMS-based ones it also shows the **original message** in a chat-style card.
 - Home dashboard: spent this month, received, transaction count, top category, comparison with last month, a category donut and a 7-day chart.
 - Activity list grouped by day, with search and Spent / Received filters.
 - Browse previous months.
@@ -61,7 +63,7 @@ Most expense trackers ask you to type every payment, or to hand your bank login 
 - **Internet is used for one thing only:** asking GitHub for the latest release and downloading it when you tap **Update**. No transactions, messages, identifiers or analytics are ever sent, and there is no tracking or advertising code. As with any web request, GitHub can see your IP address.
 - All data is stored in a local Room (SQLite) database on the device.
 - Cloud backup and device-to-device transfer are disabled for the app's data.
-- Only messages from alphanumeric bank sender IDs are parsed; the raw message text is not stored.
+- Only messages from alphanumeric bank sender IDs are parsed. The message text is **not stored**: when you open a transaction, Spendly looks the message up in your phone's inbox at that moment to show it, and keeps no copy. If you delete the SMS, the card says it can't be found.
 
 Permissions requested:
 

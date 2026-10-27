@@ -77,6 +77,12 @@ def month_rows(start, last_day, scale=1.0, tag="m"):
 
 
 current = month_rows(month_start, now.day, 1.0, "cur")
+# Two entries made with the + button: manual rows use the "manual-" key prefix and have no account.
+manual = [
+    ("manual-demo-1", 4000, 1, "Chai", "Food", None, int((now - timedelta(minutes=40)).timestamp() * 1000)),
+    ("manual-demo-2", 12000, 1, "Auto to station", "Transport", None, int((now - timedelta(days=1, hours=2)).timestamp() * 1000)),
+]
+current += [m for m in manual if m[6] >= int(month_start.timestamp() * 1000)]
 spent_now = sum(r[1] for r in current if r[2])
 previous = month_rows(prev_start, (month_start - timedelta(days=1)).day, 1.0, "prev")
 spent_prev = sum(r[1] for r in previous if r[2])

@@ -30,6 +30,11 @@ data class TxnEntity(
     val timestamp: Long,
 )
 
+/** Rows the user typed in themselves (the + button) carry this prefix instead of an SMS fingerprint. */
+const val MANUAL_PREFIX = "manual-"
+
+val TxnEntity.isManual: Boolean get() = dedupeKey.startsWith(MANUAL_PREFIX)
+
 @Entity(tableName = "merchant_rule")
 data class MerchantRule(@PrimaryKey val merchant: String, val category: String)
 
@@ -46,6 +51,16 @@ interface TxnDao {
 
     @Query("SELECT * FROM txn WHERE timestamp >= :from AND timestamp < :to ORDER BY timestamp DESC")
     fun between(from: Long, to: Long): Flow<List<TxnEntity>>
+
+    // Edits and deletes are limited to manual rows in SQL itself, so a bug elsewhere can never alter a transaction parsed from an SMS.
+    @Query("UPDATE txn SET amountPaise = :amountPaise, isDebit = :isDebit, merchant = :merchant, category = :category, timestamp = :timestamp WHERE id = :id AND dedupeKey LIKE 'manual-%'")
+    suspend fun updateManual(id: Long, amountPaise: Long, isDebit: Boolean, merchant: String, category: String, timestamp: Long): Int
+
+    @Query("DELETE FROM txn WHERE id = :id AND dedupeKey LIKE 'manual-%'")
+    suspend fun deleteManual(id: Long): Int
+
+    @Query("UPDATE txn SET category = :category WHERE id = :id")
+    suspend fun setCategoryById(id: Long, category: String)
 
     @Query("UPDATE txn SET category = :category WHERE merchant = :merchant AND isDebit = 1")
     suspend fun recategorize(merchant: String, category: String)
