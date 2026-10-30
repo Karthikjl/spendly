@@ -25,7 +25,8 @@ object Categorizer {
         if (type == TxnType.CREDIT) return INCOME
         val m = merchant.lowercase()
         keywords.forEach { (category, words) -> if (words.any { it in m }) return category }
-        // A raw VPA like "john@okaxis" with no merchant keyword is most likely a person-to-person transfer.
-        return if ('@' in m) "Transfers" else OTHER
+        // A raw VPA like "john@okaxis", another person's account ("A/c ••1234") or a NEFT/IMPS/RTGS transfer with no merchant
+        // keyword is most likely a person-to-person transfer.
+        return if ('@' in m || m.startsWith("a/c ••") || m.endsWith(" transfer")) "Transfers" else OTHER
     }
 }

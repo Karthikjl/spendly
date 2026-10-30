@@ -68,6 +68,13 @@ interface TxnDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveRule(rule: MerchantRule)
 
+    @Query("SELECT merchant FROM txn WHERE dedupeKey = :key")
+    suspend fun merchantOf(key: String): String?
+
+    // Only the category the app picked by default ("Other") follows a better name; anything the user chose is kept.
+    @Query("UPDATE txn SET merchant = :merchant, category = CASE WHEN category = 'Other' THEN :category ELSE category END WHERE dedupeKey = :key AND dedupeKey NOT LIKE 'manual-%'")
+    suspend fun upgradeMerchant(key: String, merchant: String, category: String)
+
     @Query("SELECT category FROM merchant_rule WHERE merchant = :merchant")
     suspend fun ruleFor(merchant: String): String?
 
@@ -144,7 +151,9 @@ abstract class AppDatabase : RoomDatabase() {
 object Repository {
     /** Stores a parsed SMS; returns its category, or null when it was a duplicate. */
     suspend fun save(dao: TxnDao, p: ParsedTxn): String? {
-        val category = dao.ruleFor(p.merchant) ?: Categorizer.categorize(p.merchant, p.type)
+        // Remembered merchant choices are about spending; money received is always Income unless the user changes that one row.
+        val remembered = if (p.type == com.kk.spendly.parser.TxnType.DEBIT) dao.ruleFor(p.merchant) else null
+        val category = remembered ?: Categorizer.categorize(p.merchant, p.type)
         val id = dao.insert(
             TxnEntity(
                 dedupeKey = p.dedupeKey,
@@ -156,7 +165,26 @@ object Repository {
                 timestamp = p.timestamp,
             ),
         )
-        return if (id != -1L) category else null
+        if (id == -1L) {
+            // Already stored. Messages are re-read on every launch, so a better reading of the same message, such as a name
+            // where there used to be "Unknown", replaces the older one.
+            val old = dao.merchantOf(p.dedupeKey)
+            if (old != null && isBetterName(old, p.merchant)) dao.upgradeMerchant(p.dedupeKey, p.merchant, category)
+            return null
+        }
+        return category
+    }
+
+    /** A real name beats a kind of payment, which beats "Unknown"; a reference number mistaken for a name is also replaced. */
+    fun isBetterName(old: String, new: String): Boolean {
+        if (new == old) return false
+        fun rank(m: String) = when {
+            m.equals(com.kk.spendly.parser.SmsParser.UNKNOWN_MERCHANT, ignoreCase = true) -> 0
+            com.kk.spendly.parser.SmsParser.isGeneric(m) -> 1
+            else -> 2
+        }
+        val looksLikeReference = ('@' !in old && Regex("\\d{6,}").containsMatchIn(old)) || Regex("(?i)\\bref(?:no)?\\b").containsMatchIn(old)
+        return rank(new) > rank(old) || (rank(new) == 2 && rank(old) == 2 && looksLikeReference)
     }
 
     /** Removes a custom category; its transactions fall back to Other and its rules and budget are dropped. */
@@ -168,8 +196,19 @@ object Repository {
         dao.deleteCategory(name)
     }
 
-    suspend fun setCategory(dao: TxnDao, merchant: String, category: String) {
-        dao.saveRule(MerchantRule(merchant, category))
-        dao.recategorize(merchant, category)
+    /** A named merchant is worth remembering; a blank name, "Unknown" or a kind of payment ("UPI payment") is not. */
+    fun remembersMerchant(merchant: String): Boolean =
+        merchant.isNotBlank() && !com.kk.spendly.parser.SmsParser.isGeneric(merchant)
+
+    /**
+     * Changes the category of a transaction parsed from SMS. The tapped row always changes, spent or received. For spending at a
+     * named merchant the choice is also remembered, so that merchant's other payments and future ones follow it.
+     */
+    suspend fun setCategory(dao: TxnDao, txn: TxnEntity, category: String) {
+        dao.setCategoryById(txn.id, category)
+        if (txn.isDebit && remembersMerchant(txn.merchant)) {
+            dao.saveRule(MerchantRule(txn.merchant, category))
+            dao.recategorize(txn.merchant, category)
+        }
     }
 }

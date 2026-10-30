@@ -94,6 +94,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import java.time.LocalDate
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -143,20 +146,17 @@ internal fun rupees(paise: Long): String =
 
 internal val HeroGradient = Brush.linearGradient(listOf(Palette.AccentLight, Palette.AccentDark))
 
-private enum class Tab(val label: String, val icon: ImageVector) {
+internal enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Rounded.Home),
     Budgets("Budgets", Icons.Rounded.DonutLarge),
     Activity("Activity", Icons.Rounded.Receipt),
     Categories("Categories", Icons.Rounded.Category),
 }
 
-/**
- * Opens the add-category dialog. [merchant] is set when it was opened from a parsed transaction (the choice is remembered
- * for that merchant); [manualId] when it was opened from a manual entry (only that entry is recategorised).
- */
-private data class AddRequest(val merchant: String?, val manualId: Long? = null)
+/** Opens the add-category dialog; [txn] is the transaction it was opened from, which gets filed into the new category. */
+private data class AddRequest(val txn: TxnEntity?)
 
-private fun addRequestFor(t: TxnEntity) = if (t.isManual) AddRequest(null, t.id) else AddRequest(t.merchant)
+private fun addRequestFor(t: TxnEntity) = AddRequest(t)
 
 @Composable
 internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, onTabHandled: () -> Unit = {}) {
@@ -177,8 +177,11 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
     val previousSpent by vm.previousSpent.collectAsStateWithLifecycle()
     val customs by vm.customCategories.collectAsStateWithLifecycle()
     val catalog = remember(customs) { Catalog.build(customs) }
-    val limits = budgets.associate { it.category to it.limitPaise }
-    val spentBy = txns.filter { it.isDebit }.groupBy { it.category }.mapValues { e -> e.value.sumOf { it.amountPaise } }
+    // Remembered so that unchanged data keeps the same instances; screens can then skip redrawing when something unrelated changes.
+    val limits = remember(budgets) { budgets.associate { it.category to it.limitPaise } }
+    val spentBy = remember(txns) { txns.filter { it.isDebit }.groupBy { it.category }.mapValues { e -> e.value.sumOf { it.amountPaise } } }
+    val week by vm.week.collectAsStateWithLifecycle()
+    val weekEnd = remember(month) { Dates.weekEnd(month) }
 
     var tab by remember { mutableStateOf(Tab.Home) }
     LaunchedEffect(openTab) {
@@ -268,7 +271,7 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
                         label = "tab",
                     ) {
                         when (it) {
-                            Tab.Home -> HomeTab(txns, limits, spentBy, previousSpent, month, onOpenBudgets = { tab = Tab.Budgets })
+                            Tab.Home -> HomeTab(txns, limits, spentBy, previousSpent, week, weekEnd, onOpenBudgets = { tab = Tab.Budgets })
                             Tab.Budgets -> BudgetsTab(spentBy, limits, alertsOff = !notifOn && !BuildConfig.DEMO, onEnableAlerts = { enableAlerts() }) { c -> editing = c }
                             Tab.Activity -> ActivityTab(txns, onOpen = { selectedId = it.id }, onCategoryPicked = vm::setTxnCategory, onNewCategory = { addRequest = addRequestFor(it) })
                             Tab.Categories -> CategoriesTab(spentBy, onAdd = { addRequest = AddRequest(null) }, onRemove = { c -> removing = c })
@@ -321,7 +324,7 @@ internal fun Screen(vm: MainViewModel = viewModel(), openTab: String? = null, on
         }
         addRequest?.let { req ->
             AddCategoryDialog(existing = catalog.names, onDismiss = { addRequest = null }) { name, color, icon ->
-                vm.addCategory(name, color, icon, req.merchant, req.manualId)
+                vm.addCategory(name, color, icon, req.txn)
                 addRequest = null
             }
         }
@@ -359,9 +362,19 @@ private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_
 private fun Header(month: Calendar, canGoForward: Boolean, onPrev: () -> Unit, onNext: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(greeting(), style = MaterialTheme.typography.bodyMedium, color = Palette.TextMuted)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(greeting(), style = MaterialTheme.typography.bodyMedium, color = Palette.TextMuted)
+                // So the test copy can never be mistaken for the real one. A compile-time constant: absent from release builds.
+                if (BuildConfig.DEV_BUILD && !BuildConfig.DEMO) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "DEV", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.background(Palette.Warning, RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 1.dp),
+                    )
+                }
+            }
             Text(
-                SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(month.time),
+                remember(month) { SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(month.time) },
                 style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold,
             )
         }
@@ -373,7 +386,7 @@ private fun Header(month: Calendar, canGoForward: Boolean, onPrev: () -> Unit, o
 
 @Composable
 private fun GlassIconButton(icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Glass(Modifier.size(44.dp), shape = CircleShape, onClick = if (enabled) onClick else null, onClickLabel = description) {
+    Glass(Modifier.size(44.dp), shape = CircleShape, elevation = 6.dp, onClick = if (enabled) onClick else null, onClickLabel = description) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = description, tint = if (enabled) Palette.Ink else Palette.Ink.copy(alpha = 0.25f))
         }
@@ -381,21 +394,31 @@ private fun GlassIconButton(icon: ImageVector, description: String, enabled: Boo
 }
 
 @Composable
-private fun FloatingNav(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Unit) {
+internal fun FloatingNav(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Unit) {
+    // The + button is NavButtonSize wide and sits NavButtonLift above the bar's top edge, so its centre is a little below that edge.
+    // The bar is cut away around it with a gap of NavButtonGap, which leaves the button floating detached in a notch.
+    val barShape = remember {
+        NotchedBarShape(
+            cornerRadius = 30.dp,
+            notchRadius = NavButtonSize / 2 + NavButtonGap,
+            notchCenterY = NavButtonSize / 2 - NavButtonLift,
+            fillet = 9.dp,
+        )
+    }
     Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 22.dp, bottom = 10.dp)) {
-        Glass(Modifier.fillMaxWidth().height(70.dp), shape = RoundedCornerShape(30.dp), tint = Color.White.copy(alpha = 0.78f)) {
+        Glass(Modifier.fillMaxWidth().height(70.dp), shape = barShape, tint = Color.White.copy(alpha = 0.78f)) {
             BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 6.dp)) {
-                val gap = 64.dp
+                val gap = 76.dp // room for the notch between the two halves of the bar
                 val slot = (maxWidth - gap) / 4
                 val index = selected.ordinal
-                val indicatorX by animateDpAsState(
+                val indicatorX = animateDpAsState(
                     targetValue = slot * index + if (index >= 2) gap else 0.dp,
                     animationSpec = spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessLow),
                     label = "indicator",
                 )
                 // One pill glides behind whichever item is selected, wrapping both its icon and its label.
                 Box(
-                    Modifier.offset(x = indicatorX + 4.dp, y = 8.dp)
+                    Modifier.offset { IntOffset((indicatorX.value + 4.dp).roundToPx(), 8.dp.roundToPx()) }
                         .size(slot - 8.dp, 54.dp)
                         .background(Palette.Accent.copy(alpha = 0.14f), RoundedCornerShape(22.dp))
                         .border(1.dp, Palette.Accent.copy(alpha = 0.18f), RoundedCornerShape(22.dp)),
@@ -409,7 +432,7 @@ private fun FloatingNav(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Uni
             }
         }
         Box(
-            Modifier.align(Alignment.TopCenter).offset(y = (-20).dp).size(58.dp)
+            Modifier.align(Alignment.TopCenter).offset(y = -NavButtonLift).size(NavButtonSize)
                 .background(HeroGradient, CircleShape)
                 .clip(CircleShape)
                 .clickable(onClickLabel = "Add a transaction", onClick = onAdd)
@@ -420,6 +443,9 @@ private fun FloatingNav(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Uni
 }
 
 private val NavPillWidth = 52.dp
+private val NavButtonSize = 58.dp
+private val NavButtonLift = 22.dp
+private val NavButtonGap = 7.dp
 
 @Composable
 private fun NavItem(tab: Tab, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
@@ -534,7 +560,8 @@ private fun HomeTab(
     limits: Map<String, Long>,
     spentBy: Map<String, Long>,
     previousSpent: Long,
-    month: Calendar,
+    week: List<TxnEntity>,
+    weekEnd: LocalDate,
     onOpenBudgets: () -> Unit,
 ) {
     val catalog = LocalCatalog.current
@@ -628,14 +655,27 @@ private fun HomeTab(
                 }
             }
         }
-        item {
-            Glass(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp)) {
-                    Text("Last 7 days", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.size(14.dp))
-                    BarChart(lastSevenDays(txns, month))
-                }
+        item { WeekCard(week, weekEnd) }
+    }
+}
+
+/** The "Last 7 days" card: bars for spending, tap a day to see what was spent and received on it. */
+@Composable
+internal fun WeekCard(week: List<TxnEntity>, weekEnd: LocalDate) {
+    Glass(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Last 7 days", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("Tap a day", style = MaterialTheme.typography.bodySmall, color = Palette.TextMuted)
             }
+            Spacer(Modifier.size(10.dp))
+            val days = remember(week, weekEnd) { weekSummary(week, weekEnd) }
+            var selectedDay by remember(weekEnd) { mutableIntStateOf(days.lastIndex) }
+            WeekChart(days, selectedDay, onSelect = { selectedDay = it })
+            Spacer(Modifier.size(2.dp))
+            Text("Bars show spending. A green dot marks money received.", style = MaterialTheme.typography.bodySmall, color = Palette.TextMuted)
+            Spacer(Modifier.size(12.dp))
+            DayPanel(days[selectedDay.coerceIn(0, days.lastIndex)])
         }
     }
 }
@@ -647,7 +687,7 @@ private fun percent(part: Long, whole: Long): String {
 
 @Composable
 private fun StatTile(icon: ImageVector, tint: Color, value: String, label: String, modifier: Modifier) {
-    Glass(modifier, shape = RoundedCornerShape(22.dp)) {
+    Glass(modifier, shape = RoundedCornerShape(22.dp), elevation = 6.dp) {
         Column(Modifier.padding(14.dp)) {
             Box(Modifier.size(34.dp).background(tint.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
@@ -656,22 +696,6 @@ private fun StatTile(icon: ImageVector, tint: Color, value: String, label: Strin
             Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Text(label, style = MaterialTheme.typography.labelSmall, color = Palette.TextMuted, maxLines = 1)
         }
-    }
-}
-
-/** Daily debit totals for the 7 days ending today (or the month's last day when browsing a past month). */
-private fun lastSevenDays(txns: List<TxnEntity>, month: Calendar): List<Pair<String, Long>> {
-    val now = Calendar.getInstance()
-    val last = if (now.get(Calendar.YEAR) == month.get(Calendar.YEAR) && now.get(Calendar.MONTH) == month.get(Calendar.MONTH)) {
-        now
-    } else (month.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, getActualMaximum(Calendar.DAY_OF_MONTH)) }
-    last.set(Calendar.HOUR_OF_DAY, 0); last.set(Calendar.MINUTE, 0); last.set(Calendar.SECOND, 0); last.set(Calendar.MILLISECOND, 0)
-    val label = SimpleDateFormat("EEEEE", Locale.getDefault())
-    return (6 downTo 0).map { back ->
-        val from = (last.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, -back) }
-        val to = (from.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, 1) }
-        label.format(from.time) to txns.filter { it.isDebit && it.timestamp >= from.timeInMillis && it.timestamp < to.timeInMillis }
-            .sumOf { it.amountPaise }
     }
 }
 
@@ -717,7 +741,7 @@ private fun BudgetsTab(
                 amount > 0 -> "${rupees(amount)} spent · no budget"
                 else -> "No budget set"
             }
-            Glass(Modifier.fillMaxWidth(), onClick = { onEdit(category) }, onClickLabel = "Edit $category budget") {
+            Glass(Modifier.fillMaxWidth(), elevation = 4.dp, onClick = { onEdit(category) }, onClickLabel = "Edit $category budget") {
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Avatar(category)
@@ -757,7 +781,7 @@ private fun CategoriesTab(spentBy: Map<String, Long>, onAdd: () -> Unit, onRemov
             }
         }
         items(catalog.all, key = { it.name }) { info ->
-            Glass(Modifier.fillMaxWidth()) {
+            Glass(Modifier.fillMaxWidth(), elevation = 4.dp) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Avatar(info.name)
                     Spacer(Modifier.width(12.dp))
@@ -789,17 +813,7 @@ internal fun Avatar(category: String) {
 
 private enum class Filter(val label: String) { All("All"), Spent("Spent"), Received("Received") }
 
-internal fun dayLabel(ts: Long): String {
-    val day = Calendar.getInstance().apply { timeInMillis = ts }
-    val today = Calendar.getInstance()
-    val yesterday = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
-    fun same(a: Calendar, b: Calendar) = a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
-    return when {
-        same(day, today) -> "Today"
-        same(day, yesterday) -> "Yesterday"
-        else -> SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(Date(ts))
-    }
-}
+internal fun dayLabel(ts: Long): String = Dates.dayLabel(ts)
 
 @Composable
 private fun ActivityTab(
@@ -810,12 +824,15 @@ private fun ActivityTab(
 ) {
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(Filter.All) }
-    val visible = txns.filter {
-        (filter == Filter.All || (filter == Filter.Spent) == it.isDebit) &&
-            (query.isBlank() || it.merchant.contains(query.trim(), ignoreCase = true) || it.category.contains(query.trim(), ignoreCase = true))
+    // Redone only when the data, the search or the filter changes, not on every redraw. Rows arrive newest first, so grouping by
+    // calendar day keeps the days in order.
+    val grouped = remember(txns, query, filter) {
+        val q = query.trim()
+        txns.filter {
+            (filter == Filter.All || (filter == Filter.Spent) == it.isDebit) &&
+                (q.isEmpty() || it.merchant.contains(q, ignoreCase = true) || it.category.contains(q, ignoreCase = true))
+        }.groupBy { Dates.dateOf(it.timestamp) }
     }
-    // Rows arrive newest first, so grouping by label keeps days in order.
-    val grouped = visible.groupBy { dayLabel(it.timestamp) }
 
     Column(Modifier.fillMaxSize()) {
         GlassField(
@@ -847,8 +864,9 @@ private fun ActivityTab(
                 if (txns.isEmpty()) "New alerts appear here, or tap + to add one." else "Try a different search or filter.",
             )
         } else LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-            grouped.forEach { (label, rows) ->
-                item(key = "header-$label") {
+            grouped.forEach { (day, rows) ->
+                item(key = "header-$day") {
+                    val label = Dates.label(day)
                     Row(
                         Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp, start = 4.dp, end = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -878,6 +896,7 @@ private fun TxnRow(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(20.dp),
         tint = Color.White.copy(alpha = 0.55f),
+        elevation = 3.dp,
         onClick = { onOpen(t) },
         onClickLabel = "View details",
     ) {
@@ -890,7 +909,8 @@ private fun TxnRow(
             Column(Modifier.weight(1f)) {
                 Text(t.merchant, maxLines = 1, fontWeight = FontWeight.Medium)
                 Text(
-                    SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(t.timestamp)) + if (t.isManual) " · Manual" else "",
+                    Dates.time(t.timestamp) +
+                        (t.account?.let { " · ••$it" } ?: "") + if (t.isManual) " · Manual" else "",
                     style = MaterialTheme.typography.bodySmall, color = Palette.TextMuted,
                 )
             }

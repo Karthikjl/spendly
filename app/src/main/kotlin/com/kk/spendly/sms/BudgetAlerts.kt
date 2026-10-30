@@ -90,7 +90,7 @@ object BudgetAlerts {
             .setLargeIcon(badge(context, category, categoryColor))
             .setContentTitle(title)
             .setContentText(text)
-            .setSubText("Spendly · $month")
+            .setSubText("${context.getString(R.string.app_name)} · $month")
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setProgress(100, percent.coerceAtMost(100), false)
             .addAction(0, "View budgets", open)

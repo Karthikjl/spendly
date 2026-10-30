@@ -32,6 +32,7 @@ Most expense trackers ask you to type every payment, or to hand your bank login 
 **Automatic tracking**
 - Reads bank, card and UPI alert SMS and extracts the amount, debit or credit, merchant or UPI ID, account and reference number.
 - Scans your existing inbox once, then picks up new messages as they arrive.
+- When a message names nobody, Spendly shows what it can instead of "Unknown": the other side's account (`A/c ••1234`) or the kind of payment (UPI payment, ATM withdrawal, EMI / auto-debit...). Old rows are upgraded the next time messages are re-read.
 - Ignores OTPs and messages from ordinary phone numbers, and collapses the duplicate alerts a single payment can trigger (for example the bank's SMS plus the UPI app's SMS).
 
 **Categories you control**
@@ -53,7 +54,7 @@ Most expense trackers ask you to type every payment, or to hand your bank login 
 - A **+** button for cash and other payments that never send an SMS. Pick the date too, so yesterday's chai can be added today.
 - **Edit or delete manual entries** any time: wrong amount, note, date or category is a two-tap fix. Transactions parsed from SMS can't be edited, only recategorised, so they always match your bank.
 - **Tap any transaction** for a full view: exact amount, date and time, account, reference number and its category. For SMS-based ones it also shows the **original message** in a chat-style card.
-- Home dashboard: spent this month, received, transaction count, top category, comparison with last month, a category donut and a 7-day chart.
+- Home dashboard: spent this month, received, transaction count, top category, comparison with last month, a category donut, and a 7-day chart where you can tap any day to see what was spent and received on it.
 - Activity list grouped by day, with search and Spent / Received filters.
 - Browse previous months.
 - Frosted-glass interface with Poppins typography and smooth transitions.
@@ -113,7 +114,7 @@ echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 # run the unit tests
 ./gradlew testDebugUnitTest
 
-# build a debug APK and install it on a connected phone
+# build a debug APK and install it on a connected phone (it installs as its own app, "Spendly Dev")
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -162,6 +163,27 @@ adb shell "run-as com.kk.spendly.demo sh -c 'rm -f databases/expenses.db-wal dat
 ```
 
 Open the demo app and capture the screens with `adb exec-out screencap -p`. Crop off the status bar, which shows the real phone's notifications and clock, and uninstall the demo app afterwards with `adb uninstall com.kk.spendly.demo`.
+
+## Testing next to your real app
+
+The everyday debug build installs as a **separate app**, so you can try new work on the phone you actually use without touching your real data or the released copy.
+
+| | Released app | Test build |
+|---|---|---|
+| Name and icon | Spendly, indigo | Spendly Dev, amber, with a small DEV tag in the app |
+| Package | `com.kk.spendly` | `com.kk.spendly.debug` |
+| Signed with | your release key | the debug key |
+| Speed | compiled by Android | compiled by Android (it is not a debuggable build, see below) |
+| Data | its own | its own: starts empty and fills from your SMS |
+| Updates | checks GitHub Releases | never, since it can't update a different app |
+
+```bash
+tools/install-dev.sh      # builds "Spendly Dev", installs it on the connected phone and has Android compile it
+```
+
+The test build is deliberately **not debuggable**. Android will not compile a debuggable app to native code, so a debuggable build runs interpreted straight from the APK and is visibly laggy (about a quarter of frames dropped when switching tabs, against 1 to 3 percent for the compiled one). To attach a debugger, set `isDebuggable = true` for the `debug` build type temporarily. A plain `./gradlew installDebug` works too, but the app stays slow until Android compiles it overnight; the script's last step does it immediately.
+
+Both apps read the same SMS and can both show budget notifications, so switch notifications off for Spendly Dev if you don't want duplicates. Uninstalling the test app deletes only its own data. The `demo` build used for the screenshots is a third, separate app.
 
 ## Publishing an update
 

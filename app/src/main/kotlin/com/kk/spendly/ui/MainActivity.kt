@@ -37,6 +37,7 @@ import com.kk.spendly.update.Updater
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
@@ -55,6 +56,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val previousSpent = month.flatMapLatest { start -> dao.spentBetween(shift(start, -1).timeInMillis, start.timeInMillis) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
 
+    // The 7-day strip on Home reaches back past the start of the month (early in a month it spans two), so it has its own query.
+    val week = month.flatMapLatest { start -> weekOf(start) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val customCategories = dao.customCategories().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val budgets = dao.budgets().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -71,7 +76,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Asks GitHub once per app launch whether a newer release exists; the banner stays hidden for a version the user dismissed. */
     private fun checkForUpdate() = viewModelScope.launch {
-        if (BuildConfig.DEMO) return@launch
+        if (BuildConfig.DEV_BUILD) return@launch // test builds never offer to update to a release
         val info = Updater.fetchLatest() ?: return@launch
         val isNewer = Updater.isNewer(info.version, Updater.installedVersion(getApplication()))
         if (isNewer && updatePrefs.getString("dismissed_version", null) != info.version) update.value = UpdateState.Available(info)
@@ -111,18 +116,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val canGoForward get() = month.value.timeInMillis < startOfMonth(Calendar.getInstance()).timeInMillis
 
-    /** Creates a category; when [assignMerchant] is set, that merchant is moved into it straight away. */
-    fun addCategory(
-        name: String,
-        colorArgb: Long,
-        iconKey: String,
-        assignMerchant: String? = null,
-        assignManualId: Long? = null,
-    ) = viewModelScope.launch {
+    /** Creates a category; when [assignTo] is set (the transaction it was created from), that transaction is filed into it. */
+    fun addCategory(name: String, colorArgb: Long, iconKey: String, assignTo: TxnEntity? = null) = viewModelScope.launch {
         dao.addCategory(CustomCategory(name, colorArgb, iconKey))
-        // A manual entry is recategorised on its own; a parsed one remembers the merchant for next time.
-        if (assignManualId != null) dao.setCategoryById(assignManualId, name)
-        else if (assignMerchant != null) Repository.setCategory(dao, assignMerchant, name)
+        if (assignTo != null) applyCategory(assignTo, name)
     }
 
     /** Records a cash or other off-SMS transaction. */
@@ -186,9 +183,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         dao.allBudgets().forEach { BudgetAlerts.check(getApplication(), dao, it.category) }
     }
 
-    /** Manual entries change on their own; for parsed ones the choice is remembered for every payment to that merchant. */
-    fun setTxnCategory(t: TxnEntity, category: String) = viewModelScope.launch {
-        if (t.isManual) dao.setCategoryById(t.id, category) else Repository.setCategory(dao, t.merchant, category)
+    fun setTxnCategory(t: TxnEntity, category: String) = viewModelScope.launch { applyCategory(t, category) }
+
+    /** Manual entries change on their own; parsed spending at a named merchant is remembered for that merchant. */
+    private suspend fun applyCategory(t: TxnEntity, category: String) {
+        if (t.isManual) dao.setCategoryById(t.id, category) else Repository.setCategory(dao, t, category)
+        // The new category may have a budget that this change pushes past a warning level.
+        if (t.isDebit) BudgetAlerts.check(getApplication(), dao, category)
+    }
+
+    private fun weekOf(start: Calendar): Flow<List<TxnEntity>> {
+        val end = Dates.weekEnd(start)
+        return dao.between(Dates.startMillis(end.minusDays(6)), Dates.startMillis(end.plusDays(1)))
     }
 
     private fun shift(c: Calendar, months: Int) = (c.clone() as Calendar).apply { add(Calendar.MONTH, months) }

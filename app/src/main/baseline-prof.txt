@@ -1,0 +1,8 @@
+# Baseline profile: tells Android to compile these classes to native code when the app is installed, instead of interpreting
+# them until its overnight compile. A sideloaded app (no Play Store) gets no other head start, so without this every install
+# or update feels laggy for the first day. Rules cover the app's own code and the UI libraries it draws with.
+HSPLcom/kk/spendly/**;->**(**)**
+HSPLandroidx/compose/**;->**(**)**
+HSPLandroidx/room/**;->**(**)**
+HSPLandroidx/lifecycle/**;->**(**)**
+HSPLandroidx/activity/**;->**(**)**

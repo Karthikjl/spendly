@@ -15,9 +15,10 @@ android {
         applicationId = "com.kk.spendly"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         buildConfigField("boolean", "DEMO", "false")
+        buildConfigField("boolean", "DEV_BUILD", "false")
     }
 
     val keystoreProps = Properties().apply {
@@ -41,11 +42,22 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
         }
+        // The everyday debug build installs as its own app, "Spendly Dev" (com.kk.spendly.debug, amber icon), with separate data and
+        // a different signing key, so new work can be tried on a phone that also has the released app, which stays untouched.
+        // It is deliberately NOT debuggable. Android refuses to compile a debuggable app to native code, so a debuggable build runs
+        // interpreted from the APK and is visibly laggy on a real phone. Not debuggable, it is compiled like the released app.
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-dev"
+            isDebuggable = false
+            buildConfigField("boolean", "DEV_BUILD", "true")
+        }
         // Installs next to the real app as com.kk.spendly.demo with its own empty database. It never reads SMS and never goes
         // online, so screenshots made from it can only ever contain the sample data from tools/seed_demo_db.py.
         create("demo") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".demo"
+            isDebuggable = true // so the sample-data steps in the README can write its database with run-as
             matchingFallbacks += "debug"
             buildConfigField("boolean", "DEMO", "true")
         }

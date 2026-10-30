@@ -22,7 +22,8 @@ import java.util.concurrent.TimeUnit
 /** Once a day, when online, checks for a newer release and posts one notification per new version. */
 class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        if (BuildConfig.DEMO) return Result.success()
+        // Test builds are a different app (and signed differently), so they must never offer to "update" to a release.
+        if (BuildConfig.DEV_BUILD) return Result.success()
         val info = Updater.fetchLatest() ?: return Result.success()
         if (Updater.isNewer(info.version, Updater.installedVersion(applicationContext))) {
             UpdateNotifier.notifyAvailable(applicationContext, info)

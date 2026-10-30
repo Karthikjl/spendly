@@ -49,6 +49,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kk.spendly.R
@@ -149,22 +150,37 @@ fun GlassBackground(content: @Composable () -> Unit) {
     }
 }
 
-/** Frosted-glass surface: translucent white, a bright edge highlight and a soft indigo shadow. */
+// Built once and shared: a new brush and two new colors per card per redraw is needless garbage in a scrolling list.
+private val GlassEdge = Brush.linearGradient(listOf(Color.White.copy(alpha = 0.95f), Color.White.copy(alpha = 0.25f)))
+private val GlassAmbientShadow = Palette.Accent.copy(alpha = 0.10f)
+private val GlassSpotShadow = Palette.Accent.copy(alpha = 0.22f)
+
+/**
+ * Frosted-glass surface: translucent white, a bright edge highlight and a soft indigo shadow.
+ *
+ * [elevation] is the shadow depth. Every shadow is blurred by the GPU on every frame of a scroll or tab switch, so the few big
+ * cards keep a soft one while rows in long lists pass a small value, or 0 for none.
+ */
 @Composable
 fun Glass(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(24.dp),
     tint: Color = Color.White.copy(alpha = 0.62f),
+    elevation: Dp = 10.dp,
     onClick: (() -> Unit)? = null,
     onClickLabel: String? = null,
     content: @Composable () -> Unit,
 ) {
+    // shadow() already clips to the shape, so a second clip would only add another layer.
+    val surface = if (elevation > 0.dp) {
+        modifier.shadow(elevation, shape, ambientColor = GlassAmbientShadow, spotColor = GlassSpotShadow)
+    } else {
+        modifier.clip(shape)
+    }
     Box(
-        modifier
-            .shadow(14.dp, shape, ambientColor = Palette.Accent.copy(alpha = 0.10f), spotColor = Palette.Accent.copy(alpha = 0.22f))
-            .clip(shape)
+        surface
             .background(tint)
-            .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.95f), Color.White.copy(alpha = 0.25f))), shape)
+            .border(1.dp, GlassEdge, shape)
             .then(if (onClick != null) Modifier.clickable(onClickLabel = onClickLabel, onClick = onClick) else Modifier),
     ) { content() }
 }
